@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-OrderProcessing.OrderWorker-19ae7eb7-83ee-4593-9bc0-3a9c13467f81</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.7" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OrderProcessing.Application\OrderProcessing.Application.csproj" />
+    <ProjectReference Include="..\OrderProcessing.Infrastructure\OrderProcessing.Infrastructure.csproj" />
+    <ProjectReference Include="..\OrderProcessing.Contracts\OrderProcessing.Contracts.csproj" />
+  </ItemGroup>
+</Project>
