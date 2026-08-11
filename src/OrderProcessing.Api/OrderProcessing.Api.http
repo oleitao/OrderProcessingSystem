@@ -1,6 +1,29 @@
 @OrderProcessing.Api_HostAddress = http://localhost:5173
 
-GET {{OrderProcessing.Api_HostAddress}}/weatherforecast/
+POST {{OrderProcessing.Api_HostAddress}}/api/orders
+Content-Type: application/json
+
+{
+  "customerName": "John Doe",
+  "customerEmail": "john@example.com",
+  "items": [
+    { "productName": "Keyboard", "quantity": 1, "unitPrice": 49.90 }
+  ]
+}
+
+###
+
+GET {{OrderProcessing.Api_HostAddress}}/api/orders
+Accept: application/json
+
+###
+
+GET {{OrderProcessing.Api_HostAddress}}/api/orders/{{orderId}}
+Accept: application/json
+
+###
+
+PATCH {{OrderProcessing.Api_HostAddress}}/api/orders/{{orderId}}/cancel
 Accept: application/json
 
 ###
