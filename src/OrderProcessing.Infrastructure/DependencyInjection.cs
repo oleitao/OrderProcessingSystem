@@ -1,8 +1,10 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using OrderProcessing.Application.Interfaces;
 using OrderProcessing.Infrastructure.Database;
+using OrderProcessing.Infrastructure.Messaging;
 using OrderProcessing.Infrastructure.Outbox;
 using OrderProcessing.Infrastructure.Repositories;
 
@@ -20,6 +22,10 @@ public static class DependencyInjection
         services.AddScoped<IOrderRepository, OrderRepository>();
         services.AddScoped<IIdempotencyRepository, IdempotencyRepository>();
         services.AddScoped<IOutboxWriter, OutboxWriter>();
+
+        services.Configure<RabbitMqOptions>(configuration.GetSection(RabbitMqOptions.SectionName));
+        services.AddSingleton<IRabbitMqConnectionFactory, RabbitMqConnectionFactory>();
+        services.AddHostedService<RabbitMqTopologyInitializer>();
 
         return services;
     }
