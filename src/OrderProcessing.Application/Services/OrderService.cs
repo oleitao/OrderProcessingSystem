@@ -9,6 +9,7 @@ namespace OrderProcessing.Application.Services;
 public sealed class OrderService(
     IOrderRepository orderRepository,
     IIdempotencyRepository idempotencyRepository,
+    IOutboxWriter outboxWriter,
     ILogger<OrderService> logger) : IOrderService
 {
     public async Task<CreateOrderResult> CreateOrderAsync(CreateOrderCommand command, CancellationToken cancellationToken)
@@ -35,12 +36,17 @@ public sealed class OrderService(
         var order = Order.Create(command.CustomerName, command.CustomerEmail, itemDrafts);
 
         await orderRepository.AddAsync(order, cancellationToken);
+        await outboxWriter.AddOrderCreatedEventAsync(order.Id, cancellationToken);
 
         if (idempotencyKey is not null)
             await idempotencyRepository.AddAsync(IdempotencyRecord.Create(idempotencyKey, order.Id), cancellationToken);
 
         try
         {
+            // Order + OutboxMessage (+ IdempotencyRecord, if a key was given) all go through this
+            // single SaveChanges call, so they commit atomically. If RabbitMQ is down, this insert
+            // still succeeds — the OutboxMessage just stays unprocessed until the Outbox Worker
+            // (Phase 8) is able to publish it.
             await orderRepository.SaveChangesAsync(cancellationToken);
         }
         catch (IdempotencyKeyConflictException) when (idempotencyKey is not null)
