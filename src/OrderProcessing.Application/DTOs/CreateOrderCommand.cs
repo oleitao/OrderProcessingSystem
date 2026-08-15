@@ -5,4 +5,7 @@ public sealed record CreateOrderItemCommand(string ProductName, int Quantity, de
 public sealed record CreateOrderCommand(
     string CustomerName,
     string CustomerEmail,
-    IReadOnlyCollection<CreateOrderItemCommand> Items);
+    IReadOnlyCollection<CreateOrderItemCommand> Items,
+    string? IdempotencyKey = null);
+
+public sealed record CreateOrderResult(OrderDto Order, bool IsNewOrder);

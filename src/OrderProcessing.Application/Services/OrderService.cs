@@ -1,14 +1,33 @@
 using Microsoft.Extensions.Logging;
 using OrderProcessing.Application.DTOs;
+using OrderProcessing.Application.Exceptions;
 using OrderProcessing.Application.Interfaces;
 using OrderProcessing.Domain.Entities;
 
 namespace OrderProcessing.Application.Services;
 
-public sealed class OrderService(IOrderRepository orderRepository, ILogger<OrderService> logger) : IOrderService
+public sealed class OrderService(
+    IOrderRepository orderRepository,
+    IIdempotencyRepository idempotencyRepository,
+    ILogger<OrderService> logger) : IOrderService
 {
-    public async Task<OrderDto> CreateOrderAsync(CreateOrderCommand command, CancellationToken cancellationToken)
+    public async Task<CreateOrderResult> CreateOrderAsync(CreateOrderCommand command, CancellationToken cancellationToken)
     {
+        var idempotencyKey = command.IdempotencyKey;
+
+        if (idempotencyKey is not null)
+        {
+            var existingOrder = await FindOrderByIdempotencyKeyAsync(idempotencyKey, cancellationToken);
+            if (existingOrder is not null)
+            {
+                logger.LogInformation(
+                    "Idempotency-Key {IdempotencyKey} already used. Returning existing OrderId: {OrderId}",
+                    idempotencyKey, existingOrder.Id);
+
+                return new CreateOrderResult(ToDto(existingOrder), IsNewOrder: false);
+            }
+        }
+
         var itemDrafts = command.Items
             .Select(item => new OrderItemDraft(item.ProductName, item.Quantity, item.UnitPrice))
             .ToList();
@@ -16,11 +35,39 @@ public sealed class OrderService(IOrderRepository orderRepository, ILogger<Order
         var order = Order.Create(command.CustomerName, command.CustomerEmail, itemDrafts);
 
         await orderRepository.AddAsync(order, cancellationToken);
-        await orderRepository.SaveChangesAsync(cancellationToken);
+
+        if (idempotencyKey is not null)
+            await idempotencyRepository.AddAsync(IdempotencyRecord.Create(idempotencyKey, order.Id), cancellationToken);
+
+        try
+        {
+            await orderRepository.SaveChangesAsync(cancellationToken);
+        }
+        catch (IdempotencyKeyConflictException) when (idempotencyKey is not null)
+        {
+            // Lost the race: another request with the same key committed first between our
+            // lookup above and this SaveChanges. The unique constraint is the real guard here;
+            // the lookup was only a fast path to avoid this branch in the common case.
+            logger.LogInformation(
+                "Idempotency-Key {IdempotencyKey} lost the insert race. Returning the winning order.",
+                idempotencyKey);
+
+            var winningOrder = await FindOrderByIdempotencyKeyAsync(idempotencyKey, cancellationToken)
+                ?? throw new InvalidOperationException(
+                    $"Idempotency-Key '{idempotencyKey}' conflicted but no winning record was found.");
+
+            return new CreateOrderResult(ToDto(winningOrder), IsNewOrder: false);
+        }
 
         logger.LogInformation("Order created. OrderId: {OrderId}", order.Id);
 
-        return ToDto(order);
+        return new CreateOrderResult(ToDto(order), IsNewOrder: true);
+    }
+
+    private async Task<Order?> FindOrderByIdempotencyKeyAsync(string idempotencyKey, CancellationToken cancellationToken)
+    {
+        var record = await idempotencyRepository.FindByKeyAsync(idempotencyKey, cancellationToken);
+        return record is null ? null : await orderRepository.GetByIdAsync(record.OrderId, cancellationToken);
     }
 
     public async Task<OrderDto?> GetOrderByIdAsync(Guid id, CancellationToken cancellationToken)
