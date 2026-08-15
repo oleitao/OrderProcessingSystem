@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using OrderProcessing.Application.Interfaces;
 using OrderProcessing.Infrastructure.Database;
+using OrderProcessing.Infrastructure.Outbox;
 using OrderProcessing.Infrastructure.Repositories;
 
 namespace OrderProcessing.Infrastructure;
@@ -18,6 +19,7 @@ public static class DependencyInjection
 
         services.AddScoped<IOrderRepository, OrderRepository>();
         services.AddScoped<IIdempotencyRepository, IdempotencyRepository>();
+        services.AddScoped<IOutboxWriter, OutboxWriter>();
 
         return services;
     }
