@@ -11,9 +11,11 @@ public sealed class OrdersController(IOrderService orderService) : ControllerBas
 {
     [HttpPost]
     [ProducesResponseType(typeof(OrderResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(OrderResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<OrderResponse>> CreateOrder(
         CreateOrderRequest request,
+        [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken)
     {
         var command = new CreateOrderCommand(
@@ -21,11 +23,17 @@ public sealed class OrdersController(IOrderService orderService) : ControllerBas
             request.CustomerEmail,
             request.Items
                 .Select(item => new CreateOrderItemCommand(item.ProductName, item.Quantity, item.UnitPrice))
-                .ToList());
+                .ToList(),
+            idempotencyKey);
 
-        var order = await orderService.CreateOrderAsync(command, cancellationToken);
+        var result = await orderService.CreateOrderAsync(command, cancellationToken);
 
-        return CreatedAtAction(nameof(GetOrderById), new { id = order.Id }, ToResponse(order));
+        // A replayed Idempotency-Key returns the order that already exists (200), instead of
+        // pretending to create a new resource (201) a second time.
+        if (!result.IsNewOrder)
+            return Ok(ToResponse(result.Order));
+
+        return CreatedAtAction(nameof(GetOrderById), new { id = result.Order.Id }, ToResponse(result.Order));
     }
 
     [HttpGet]
