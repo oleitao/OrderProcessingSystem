@@ -1,9 +1,11 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using OrderProcessing.Api.Middleware;
 using OrderProcessing.Application;
 using OrderProcessing.Infrastructure;
+using OrderProcessing.Infrastructure.Database;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -21,6 +23,16 @@ builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
 
 var app = builder.Build();
+
+// Applies pending EF Core migrations on startup — idempotent (already-applied migrations are
+// skipped), and is what lets `docker compose up` bring up a fresh environment with no manual
+// `dotnet ef database update` step. Runs before Kestrel starts listening, so anything depending
+// on this container's health check (order-worker) only sees it healthy once the schema is ready.
+using (var migrationScope = app.Services.CreateScope())
+{
+    var dbContext = migrationScope.ServiceProvider.GetRequiredService<OrderDbContext>();
+    await dbContext.Database.MigrateAsync();
+}
 
 // Configure the HTTP request pipeline.
 app.UseExceptionHandler();

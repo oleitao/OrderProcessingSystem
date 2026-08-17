@@ -39,6 +39,64 @@ services:
     networks:
       - orderprocessing-network
 
+  order-api:
+    build:
+      context: .
+      dockerfile: src/OrderProcessing.Api/Dockerfile
+    container_name: orderprocessing-order-api
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      # Between containers, use service names (postgres/rabbitmq) — never localhost.
+      ConnectionStrings__OrderDb: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-orderprocessing};Username=${POSTGRES_USER:-orderprocessing};Password=${POSTGRES_PASSWORD:-orderprocessing}"
+      RabbitMQ__HostName: rabbitmq
+      RabbitMQ__Port: "5672"
+      RabbitMQ__UserName: ${RABBITMQ_USER:-orderprocessing}
+      RabbitMQ__Password: ${RABBITMQ_PASSWORD:-orderprocessing}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - orderprocessing-network
+
+  order-worker:
+    build:
+      context: .
+      dockerfile: src/OrderProcessing.OrderWorker/Dockerfile
+    container_name: orderprocessing-order-worker
+    restart: unless-stopped
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      # Between containers, use service names (postgres/rabbitmq) — never localhost.
+      ConnectionStrings__OrderDb: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-orderprocessing};Username=${POSTGRES_USER:-orderprocessing};Password=${POSTGRES_PASSWORD:-orderprocessing}"
+      RabbitMQ__HostName: rabbitmq
+      RabbitMQ__Port: "5672"
+      RabbitMQ__UserName: ${RABBITMQ_USER:-orderprocessing}
+      RabbitMQ__Password: ${RABBITMQ_PASSWORD:-orderprocessing}
+      OrderProcessing__FailureProbability: ${ORDER_WORKER_FAILURE_PROBABILITY:-0.0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      # order-api applies EF Core migrations before it starts listening (see its Program.cs), so
+      # its health check can't pass until the schema exists — waiting on it here means order-worker
+      # never queries tables that aren't there yet.
+      order-api:
+        condition: service_healthy
+    networks:
+      - orderprocessing-network
+
 networks:
   orderprocessing-network:
     driver: bridge
