@@ -28,8 +28,14 @@ internal sealed class FakeOrderRepository : IOrderRepository
     public Task<Order?> GetByIdAsync(Guid id, CancellationToken cancellationToken) =>
         Task.FromResult(_orders.FirstOrDefault(order => order.Id == id));
 
-    public Task<IReadOnlyList<Order>> GetAllAsync(CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<Order>>(_orders.OrderByDescending(order => order.CreatedAtUtc).ToList());
+    public Task<IReadOnlyList<Order>> GetAllAsync(Guid? ownerUserId, CancellationToken cancellationToken)
+    {
+        var query = ownerUserId is { } userId
+            ? _orders.Where(order => order.UserId == userId)
+            : _orders.AsEnumerable();
+
+        return Task.FromResult<IReadOnlyList<Order>>(query.OrderByDescending(order => order.CreatedAtUtc).ToList());
+    }
 
     public Task SaveChangesAsync(CancellationToken cancellationToken)
     {

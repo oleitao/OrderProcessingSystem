@@ -8,6 +8,7 @@ public sealed class Order
     private readonly List<OrderItem> _items = new();
 
     public Guid Id { get; private set; }
+    public Guid UserId { get; private set; }
     public string CustomerName { get; private set; } = string.Empty;
     public string CustomerEmail { get; private set; } = string.Empty;
     public OrderStatus Status { get; private set; }
@@ -20,8 +21,11 @@ public sealed class Order
     // Required by EF Core for materialization; kept private so orders can only be built through Create.
     private Order() { }
 
-    public static Order Create(string customerName, string customerEmail, IReadOnlyCollection<OrderItemDraft> items)
+    public static Order Create(Guid userId, string customerName, string customerEmail, IReadOnlyCollection<OrderItemDraft> items)
     {
+        if (userId == Guid.Empty)
+            throw new ArgumentException("UserId is required.", nameof(userId));
+
         if (items is null || items.Count == 0)
             throw new ArgumentException("Order must contain at least one item.", nameof(items));
 
@@ -34,6 +38,7 @@ public sealed class Order
         var order = new Order
         {
             Id = Guid.NewGuid(),
+            UserId = userId,
             CustomerName = customerName.Trim(),
             CustomerEmail = customerEmail.Trim(),
             Status = OrderStatus.Pending,

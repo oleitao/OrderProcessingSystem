@@ -12,6 +12,13 @@ public sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
 
         builder.HasKey(o => o.Id);
 
+        builder.Property(o => o.UserId)
+            .IsRequired();
+
+        // Every "list my orders" / "is this my order" check filters on UserId, so it needs its
+        // own index rather than relying on a scan through Id.
+        builder.HasIndex(o => o.UserId);
+
         builder.Property(o => o.CustomerName)
             .HasMaxLength(200)
             .IsRequired();

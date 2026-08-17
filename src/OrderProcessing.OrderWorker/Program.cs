@@ -12,3 +12,9 @@ builder.Services.AddProcessingRecovery(builder.Configuration);
 
 var host = builder.Build();
 host.Run();
+
+// Kept internal (unlike Api/Program.cs, which is deliberately public for WebApplicationFactory<Program>):
+// IntegrationTests references both this project and Api's, and an implicit top-level Program class
+// is public by default — without this, the two "Program" types collide (CS0433) the moment both
+// are referenced by the same project.
+internal partial class Program;

@@ -39,6 +39,32 @@ services:
     networks:
       - orderprocessing-network
 
+  identity-service:
+    build:
+      context: .
+      dockerfile: src/OrderProcessing.IdentityService/Dockerfile
+    container_name: orderprocessing-identity-service
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      # SQLite is its own, dedicated store — deliberately not sharing the "postgres" container
+      # used by Orders (see .github/AGENT.md, section 2.1: Identity's data must stay decoupled).
+      ConnectionStrings__IdentityDb: "Data Source=/app/data/identity.db"
+      Jwt__Issuer: OrderProcessing.IdentityService
+      Jwt__Audience: OrderProcessing.Api
+    ports:
+      - "8081:8080"
+    volumes:
+      - identity-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - orderprocessing-network
+
   order-api:
     build:
       context: .
@@ -47,18 +73,23 @@ services:
     restart: unless-stopped
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      # Between containers, use service names (postgres/rabbitmq) — never localhost.
+      # Between containers, use service names (postgres/rabbitmq/identity-service) — never localhost.
       ConnectionStrings__OrderDb: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-orderprocessing};Username=${POSTGRES_USER:-orderprocessing};Password=${POSTGRES_PASSWORD:-orderprocessing}"
       RabbitMQ__HostName: rabbitmq
       RabbitMQ__Port: "5672"
       RabbitMQ__UserName: ${RABBITMQ_USER:-orderprocessing}
       RabbitMQ__Password: ${RABBITMQ_PASSWORD:-orderprocessing}
+      Jwt__Issuer: OrderProcessing.IdentityService
+      Jwt__Audience: OrderProcessing.Api
+      Jwt__JwksUri: "http://identity-service:8080/.well-known/jwks.json"
     ports:
       - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      identity-service:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
@@ -104,3 +135,4 @@ networks:
 volumes:
   postgres-data:
   rabbitmq-data:
+  identity-data:
