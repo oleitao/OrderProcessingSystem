@@ -65,4 +65,17 @@ public static class DependencyInjection
 
         return services;
     }
+
+    /// <summary>
+    /// Background scan for Orders stuck in Processing. OrderWorker-only — it's the process that
+    /// owns Order state transitions past Pending, so it's the natural place to also own recovering
+    /// from anomalies in that same state machine.
+    /// </summary>
+    public static IServiceCollection AddProcessingRecovery(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.Configure<ProcessingRecoveryWorkerOptions>(configuration.GetSection(ProcessingRecoveryWorkerOptions.SectionName));
+        services.AddHostedService<ProcessingRecoveryWorker>();
+
+        return services;
+    }
 }
