@@ -1,7 +1,11 @@
-using OrderProcessing.OrderWorker;
+using OrderProcessing.Infrastructure;
+using OrderProcessing.OrderWorker.Consumers;
 
 var builder = Host.CreateApplicationBuilder(args);
-builder.Services.AddHostedService<Worker>();
+
+builder.Services.AddPersistence(builder.Configuration);
+builder.Services.AddRabbitMqMessaging(builder.Configuration);
+builder.Services.AddHostedService<OrderCreatedConsumer>();
 
 var host = builder.Build();
 host.Run();
