@@ -33,6 +33,7 @@ public static class DependencyInjection
 
         services.AddScoped<IOrderRepository, OrderRepository>();
         services.AddScoped<IIdempotencyRepository, IdempotencyRepository>();
+        services.AddScoped<IProcessedMessageRepository, ProcessedMessageRepository>();
 
         return services;
     }
