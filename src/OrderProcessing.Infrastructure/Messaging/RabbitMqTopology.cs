@@ -49,4 +49,24 @@ public static class RabbitMqTopology
         _ => throw new ArgumentOutOfRangeException(
             nameof(retryAttempt), retryAttempt, $"No retry queue configured for attempt {retryAttempt}.")
     };
+
+    /// <summary>
+    /// Reads x-retry-count from a message's headers, defaulting to 0 (first attempt) when absent.
+    /// Takes a plain header dictionary rather than a RabbitMQ.Client properties type so this stays
+    /// unit-testable without constructing broker-specific objects.
+    /// </summary>
+    public static int GetRetryCount(IDictionary<string, object?>? headers)
+    {
+        if (headers is not null && headers.TryGetValue(RetryCountHeader, out var value))
+        {
+            return value switch
+            {
+                int i => i,
+                long l => (int)l,
+                _ => 0
+            };
+        }
+
+        return 0;
+    }
 }

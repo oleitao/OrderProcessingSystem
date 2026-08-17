@@ -76,3 +76,6 @@ app.MapHealthChecks("/health", new HealthCheckOptions
 });
 
 app.Run();
+
+// Exposes the top-level Program for WebApplicationFactory<Program> in the integration tests.
+public partial class Program;

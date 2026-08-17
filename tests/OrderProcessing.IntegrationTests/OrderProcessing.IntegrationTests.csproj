@@ -12,6 +12,9 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
+    <PackageReference Include="Testcontainers.RabbitMq" />
   </ItemGroup>
 
   <ItemGroup>
@@ -22,6 +25,7 @@
     <ProjectReference Include="..\..\src\OrderProcessing.Api\OrderProcessing.Api.csproj" />
     <ProjectReference Include="..\..\src\OrderProcessing.Infrastructure\OrderProcessing.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\OrderProcessing.Contracts\OrderProcessing.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\OrderProcessing.OrderWorker\OrderProcessing.OrderWorker.csproj" />
   </ItemGroup>
 
 </Project>
