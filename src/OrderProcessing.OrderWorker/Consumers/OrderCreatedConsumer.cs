@@ -16,6 +16,12 @@ namespace OrderProcessing.OrderWorker.Consumers;
 /// RabbitMQ guarantees at-least-once delivery, never exactly-once — the same EventId can arrive
 /// more than once (redelivery after a dropped connection, a requeue, etc). ProcessedMessages is
 /// what turns that at-least-once delivery into idempotent, effectively-once processing.
+///
+/// The Order transition and the ProcessedMessage insert commit in a single SaveChanges call
+/// (one transaction): if anything fails before that commit, nothing persists and the Order is
+/// left exactly as it was — safe to NACK and let RabbitMQ redeliver the whole thing from
+/// scratch. The one gap that transaction can't close is the moment between the commit
+/// succeeding and the ACK actually reaching RabbitMQ; see the comment above BasicAckAsync below.
 /// </summary>
 public sealed class OrderCreatedConsumer(
     IServiceScopeFactory scopeFactory,
@@ -121,16 +127,19 @@ public sealed class OrderCreatedConsumer(
             }
 
             order.StartProcessing();
-            await orderRepository.SaveChangesAsync(stoppingToken);
             logger.LogInformation("Order processing started. OrderId: {OrderId}", order.Id);
 
             // Placeholder for real business processing. Phase 12 hooks FailureProbability in here
-            // to demonstrate retries.
+            // to demonstrate retries — a throw at this point happens before SaveChangesAsync is
+            // ever called, so nothing above (including StartProcessing) gets persisted either.
             order.MarkAsCompleted();
             await processedMessageRepository.MarkAsProcessedAsync(@event.EventId, stoppingToken);
 
             try
             {
+                // Single commit for Pending→Processing→Completed + the ProcessedMessage insert —
+                // exactly the "BEGIN TRANSACTION ... COMMIT" block from section 17. Either all of
+                // it lands, or none of it does.
                 await orderRepository.SaveChangesAsync(stoppingToken);
             }
             catch (DuplicateMessageException)
@@ -145,8 +154,12 @@ public sealed class OrderCreatedConsumer(
 
             logger.LogInformation("Order processing completed. OrderId: {OrderId}", order.Id);
 
-            // ACK only after the DB commit above — if the process had crashed before this line,
-            // RabbitMQ would redeliver the message once it noticed the consumer was gone.
+            // THE FAILURE WINDOW: the DB commit above has already happened by this point. If the
+            // process crashes right here — after COMMIT, before this ACK reaches RabbitMQ — the
+            // broker never receives it and will redeliver the message once it notices this
+            // consumer is gone. On redelivery, HasBeenProcessedAsync (checked earlier in this
+            // method) finds the ProcessedMessage row that already committed, so the redelivered
+            // message is skipped and ACKed without ever touching the Order again.
             await channel.BasicAckAsync(eventArgs.DeliveryTag, multiple: false, stoppingToken);
         }
         catch (Exception ex)
