@@ -224,7 +224,11 @@ public sealed class OrderCreatedConsumer(
             cancellationToken: stoppingToken);
 
         logger.LogWarning(failure,
-            "Order processing failed. EventId: {EventId}, OrderId: {OrderId}. Retry {RetryCount}/{MaxRetries} scheduled on {RetryQueue}.",
+            "Order processing failed. EventId: {EventId}, OrderId: {OrderId}.",
+            @event?.EventId, @event?.OrderId);
+
+        logger.LogWarning(
+            "Retry scheduled. EventId: {EventId}, OrderId: {OrderId}, RetryCount: {RetryCount}/{MaxRetries}, RetryQueue: {RetryQueue}.",
             @event?.EventId, @event?.OrderId, nextRetryCount, RabbitMqTopology.MaxRetries, retryQueue);
 
         // We've taken ownership of retrying this message ourselves by publishing a copy onto the
@@ -267,9 +271,9 @@ public sealed class OrderCreatedConsumer(
             cancellationToken: stoppingToken);
 
         logger.LogError(failure,
-            "Order processing failed permanently after {RetryCount} retries. EventId: {EventId}, " +
-            "OrderId: {OrderId}, TimestampUtc: {FailedAtUtc}. Moved to {DlqQueue}.",
-            finalRetryCount, @event?.EventId, @event?.OrderId, failedAtUtc, RabbitMqTopology.OrdersDlqQueue);
+            "Message moved to DLQ. EventId: {EventId}, OrderId: {OrderId}, RetryCount: {RetryCount}, " +
+            "Exception: {Exception}, TimestampUtc: {FailedAtUtc}, DlqQueue: {DlqQueue}.",
+            @event?.EventId, @event?.OrderId, finalRetryCount, failure.Message, failedAtUtc, RabbitMqTopology.OrdersDlqQueue);
 
         // We've taken ownership by moving it to the DLQ ourselves — ACK the original so RabbitMQ
         // doesn't also try to redeliver it.

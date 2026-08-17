@@ -13,12 +13,13 @@ namespace OrderProcessing.Infrastructure;
 
 public static class DependencyInjection
 {
-    /// <summary>Everything the Api host needs: persistence, RabbitMQ, and outbox publishing.</summary>
+    /// <summary>Everything the Api host needs: persistence, RabbitMQ, outbox publishing, health checks.</summary>
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddPersistence(configuration);
         services.AddRabbitMqMessaging(configuration);
         services.AddOutboxPublishing(configuration);
+        services.AddApplicationHealthChecks();
 
         return services;
     }
@@ -75,6 +76,19 @@ public static class DependencyInjection
     {
         services.Configure<ProcessingRecoveryWorkerOptions>(configuration.GetSection(ProcessingRecoveryWorkerOptions.SectionName));
         services.AddHostedService<ProcessingRecoveryWorker>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// GET /health checks both dependencies the Api can't function without: PostgreSQL (via a
+    /// trivial query against OrderDbContext) and RabbitMQ (via RabbitMqHealthCheck).
+    /// </summary>
+    public static IServiceCollection AddApplicationHealthChecks(this IServiceCollection services)
+    {
+        services.AddHealthChecks()
+            .AddDbContextCheck<OrderDbContext>(name: "postgresql")
+            .AddCheck<RabbitMqHealthCheck>("rabbitmq");
 
         return services;
     }

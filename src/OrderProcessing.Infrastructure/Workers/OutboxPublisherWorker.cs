@@ -118,6 +118,10 @@ public sealed class OutboxPublisherWorker(
                 ContentType = "application/json"
             };
 
+            logger.LogInformation(
+                "Publishing event. OutboxMessageId: {OutboxMessageId}, Type: {Type}, RoutingKey: {RoutingKey}",
+                message.Id, message.Type, routingKey);
+
             // With publisherConfirmationsEnabled, this awaits the broker's ack before returning —
             // that confirmation, not just a successful TCP write, is what "publisher confirm" means.
             await channel.BasicPublishAsync(
