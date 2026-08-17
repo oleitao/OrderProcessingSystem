@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using OrderProcessing.Application.Exceptions;
 using OrderProcessing.Application.Interfaces;
 using OrderProcessing.Contracts.Events;
@@ -19,13 +20,15 @@ namespace OrderProcessing.OrderWorker.Consumers;
 ///
 /// The Order transition and the ProcessedMessage insert commit in a single SaveChanges call
 /// (one transaction): if anything fails before that commit, nothing persists and the Order is
-/// left exactly as it was — safe to NACK and let RabbitMQ redeliver the whole thing from
-/// scratch. The one gap that transaction can't close is the moment between the commit
-/// succeeding and the ACK actually reaching RabbitMQ; see the comment above BasicAckAsync below.
+/// left exactly as it was. On failure, we never NACK-with-requeue (that would hammer this same
+/// consumer again immediately) — instead we publish the message onto the next orders.retry.N
+/// queue ourselves, tracking the attempt count in a header, and ACK the original. TTL + dead-
+/// lettering on the retry queue brings it back to orders.processing later with backoff.
 /// </summary>
 public sealed class OrderCreatedConsumer(
     IServiceScopeFactory scopeFactory,
     IRabbitMqConnectionFactory connectionFactory,
+    IOptions<OrderProcessingOptions> options,
     ILogger<OrderCreatedConsumer> logger) : BackgroundService
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
@@ -94,7 +97,8 @@ public sealed class OrderCreatedConsumer(
                 ?? throw new InvalidOperationException("OrderCreatedEvent payload deserialized to null.");
 
             logger.LogInformation(
-                "Processing event. EventId: {EventId}, OrderId: {OrderId}", @event.EventId, @event.OrderId);
+                "Processing event. EventId: {EventId}, OrderId: {OrderId}, RetryCount: {RetryCount}",
+                @event.EventId, @event.OrderId, GetRetryCount(eventArgs.BasicProperties));
 
             using var scope = scopeFactory.CreateScope();
             var orderRepository = scope.ServiceProvider.GetRequiredService<IOrderRepository>();
@@ -129,9 +133,8 @@ public sealed class OrderCreatedConsumer(
             order.StartProcessing();
             logger.LogInformation("Order processing started. OrderId: {OrderId}", order.Id);
 
-            // Placeholder for real business processing. Phase 12 hooks FailureProbability in here
-            // to demonstrate retries — a throw at this point happens before SaveChangesAsync is
-            // ever called, so nothing above (including StartProcessing) gets persisted either.
+            SimulateProcessingFailure();
+
             order.MarkAsCompleted();
             await processedMessageRepository.MarkAsProcessedAsync(@event.EventId, stoppingToken);
 
@@ -139,7 +142,8 @@ public sealed class OrderCreatedConsumer(
             {
                 // Single commit for Pending→Processing→Completed + the ProcessedMessage insert —
                 // exactly the "BEGIN TRANSACTION ... COMMIT" block from section 17. Either all of
-                // it lands, or none of it does.
+                // it lands, or none of it does. A throw from SimulateProcessingFailure above never
+                // even reaches this line, so StartProcessing never persists either in that case.
                 await orderRepository.SaveChangesAsync(stoppingToken);
             }
             catch (DuplicateMessageException)
@@ -164,13 +168,95 @@ public sealed class OrderCreatedConsumer(
         }
         catch (Exception ex)
         {
-            logger.LogError(ex,
-                "Order processing failed. EventId: {EventId}, OrderId: {OrderId}",
-                @event?.EventId, @event?.OrderId);
-
-            // No retry-queue/TTL routing yet (Phase 12) — requeueing immediately is a stand-in
-            // until then, acceptable only because nothing forces a failure in this phase yet.
-            await channel.BasicNackAsync(eventArgs.DeliveryTag, multiple: false, requeue: true, stoppingToken);
+            await RouteToRetryAsync(channel, eventArgs, @event, ex, stoppingToken);
         }
     }
+
+    /// <summary>
+    /// Development-only: throws with the configured probability so retries/DLQ can be
+    /// demonstrated on demand instead of waiting for a real failure. Never enabled in Production.
+    /// </summary>
+    private void SimulateProcessingFailure()
+    {
+        var failureProbability = options.Value.FailureProbability;
+        if (failureProbability > 0 && Random.Shared.NextDouble() < failureProbability)
+            throw new InvalidOperationException($"Simulated processing failure (FailureProbability={failureProbability}).");
+    }
+
+    private async Task RouteToRetryAsync(
+        IChannel channel,
+        BasicDeliverEventArgs eventArgs,
+        OrderCreatedEvent? @event,
+        Exception failure,
+        CancellationToken stoppingToken)
+    {
+        var nextRetryCount = GetRetryCount(eventArgs.BasicProperties) + 1;
+
+        if (nextRetryCount > RabbitMqTopology.MaxRetries)
+        {
+            // TODO (Phase 13): route to orders.dlq instead of dropping. For now this is the one
+            // deliberately unfinished edge of this phase — retries beyond MaxRetries have nowhere
+            // durable to go yet, so the message would otherwise sit forever bouncing through
+            // retry.3. Dropping it here is explicit and logged, never silent.
+            logger.LogError(failure,
+                "Order processing failed permanently after {RetryCount} retries. EventId: {EventId}, " +
+                "OrderId: {OrderId}. Dropping (DLQ arrives in Phase 13).",
+                RabbitMqTopology.MaxRetries, @event?.EventId, @event?.OrderId);
+
+            await channel.BasicNackAsync(eventArgs.DeliveryTag, multiple: false, requeue: false, stoppingToken);
+            return;
+        }
+
+        var retryQueue = RabbitMqTopology.GetRetryQueueName(nextRetryCount);
+
+        var properties = new BasicProperties
+        {
+            Persistent = true,
+            ContentType = eventArgs.BasicProperties.ContentType,
+            Headers = new Dictionary<string, object?>
+            {
+                [RabbitMqTopology.RetryCountHeader] = nextRetryCount,
+                [RabbitMqTopology.LastErrorHeader] = Truncate(failure.Message, 500)
+            }
+        };
+
+        // Publish directly to the retry queue via the default (nameless) exchange, whose routing
+        // key convention is "deliver to the queue named exactly this". No binding needed for this
+        // leg — only the TTL+DLX configured on the queue itself (Phase 12 topology) matters for
+        // what happens once it lands there.
+        await channel.BasicPublishAsync(
+            exchange: string.Empty,
+            routingKey: retryQueue,
+            mandatory: false,
+            basicProperties: properties,
+            body: eventArgs.Body,
+            cancellationToken: stoppingToken);
+
+        logger.LogWarning(failure,
+            "Order processing failed. EventId: {EventId}, OrderId: {OrderId}. Retry {RetryCount}/{MaxRetries} scheduled on {RetryQueue}.",
+            @event?.EventId, @event?.OrderId, nextRetryCount, RabbitMqTopology.MaxRetries, retryQueue);
+
+        // We've taken ownership of retrying this message ourselves by publishing a copy onto the
+        // retry queue — ACK the original delivery so RabbitMQ doesn't also try to redeliver it.
+        await channel.BasicAckAsync(eventArgs.DeliveryTag, multiple: false, stoppingToken);
+    }
+
+    private static int GetRetryCount(IReadOnlyBasicProperties properties)
+    {
+        if (properties.Headers is not null &&
+            properties.Headers.TryGetValue(RabbitMqTopology.RetryCountHeader, out var value))
+        {
+            return value switch
+            {
+                int i => i,
+                long l => (int)l,
+                _ => 0
+            };
+        }
+
+        return 0;
+    }
+
+    private static string Truncate(string value, int maxLength) =>
+        value.Length <= maxLength ? value : value[..maxLength];
 }
