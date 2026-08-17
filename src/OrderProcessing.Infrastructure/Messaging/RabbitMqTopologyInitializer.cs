@@ -40,9 +40,42 @@ public sealed class RabbitMqTopologyInitializer(
                 routingKey: RabbitMqTopology.OrderCreatedRoutingKey,
                 cancellationToken: cancellationToken);
 
+            // Each retry queue is a TTL "waiting room": no consumer ever reads from it directly.
+            // Once a message sits here for x-message-ttl, RabbitMQ dead-letters it back into
+            // orders.exchange with order.created — which routes it straight back into
+            // orders.processing for another attempt, this time with a higher x-retry-count header.
+            foreach (var (queueName, ttl) in RabbitMqTopology.RetryQueues)
+            {
+                await channel.QueueDeclareAsync(
+                    queue: queueName,
+                    durable: true,
+                    exclusive: false,
+                    autoDelete: false,
+                    arguments: new Dictionary<string, object?>
+                    {
+                        ["x-message-ttl"] = (int)ttl.TotalMilliseconds,
+                        ["x-dead-letter-exchange"] = RabbitMqTopology.OrdersExchange,
+                        ["x-dead-letter-routing-key"] = RabbitMqTopology.OrderCreatedRoutingKey
+                    },
+                    cancellationToken: cancellationToken);
+            }
+
+            // Terminal queue for messages that exceeded MaxRetries. No TTL/DLX arguments — nothing
+            // ever auto-moves out of here; a human has to look at it.
+            await channel.QueueDeclareAsync(
+                queue: RabbitMqTopology.OrdersDlqQueue,
+                durable: true,
+                exclusive: false,
+                autoDelete: false,
+                cancellationToken: cancellationToken);
+
             logger.LogInformation(
-                "RabbitMQ topology declared. Exchange: {Exchange} (durable), Queue: {Queue} (durable), RoutingKey: {RoutingKey}",
-                RabbitMqTopology.OrdersExchange, RabbitMqTopology.OrdersProcessingQueue, RabbitMqTopology.OrderCreatedRoutingKey);
+                "RabbitMQ topology declared. Exchange: {Exchange} (durable), Queue: {Queue} (durable), " +
+                "RoutingKey: {RoutingKey}, RetryQueues: {RetryQueues}, Dlq: {Dlq}",
+                RabbitMqTopology.OrdersExchange, RabbitMqTopology.OrdersProcessingQueue,
+                RabbitMqTopology.OrderCreatedRoutingKey,
+                string.Join(", ", RabbitMqTopology.RetryQueues.Select(q => $"{q.QueueName}({q.Ttl.TotalSeconds}s)")),
+                RabbitMqTopology.OrdersDlqQueue);
         }
         catch (Exception ex)
         {
