@@ -15,10 +15,17 @@ public static class RabbitMqTopology
     public const string OrdersRetryQueue2 = "orders.retry.2";
     public const string OrdersRetryQueue3 = "orders.retry.3";
 
+    /// <summary>
+    /// Terminal resting place for a message that failed MaxRetries times. No TTL, no dead-letter
+    /// config — nothing auto-expires or auto-retries out of here; it stays until someone looks.
+    /// </summary>
+    public const string OrdersDlqQueue = "orders.dlq";
+
     // Headers carried on a message so a retry decision never depends on the Order's own DB state
     // (section 19 — "não confiar apenas no estado da Order para determinar retries").
     public const string RetryCountHeader = "x-retry-count";
     public const string LastErrorHeader = "x-last-error";
+    public const string FailedAtUtcHeader = "x-failed-at-utc";
 
     /// <summary>
     /// Each retry queue is a plain TTL "waiting room" with no consumer of its own: once a message

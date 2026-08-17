@@ -60,12 +60,22 @@ public sealed class RabbitMqTopologyInitializer(
                     cancellationToken: cancellationToken);
             }
 
+            // Terminal queue for messages that exceeded MaxRetries. No TTL/DLX arguments — nothing
+            // ever auto-moves out of here; a human has to look at it.
+            await channel.QueueDeclareAsync(
+                queue: RabbitMqTopology.OrdersDlqQueue,
+                durable: true,
+                exclusive: false,
+                autoDelete: false,
+                cancellationToken: cancellationToken);
+
             logger.LogInformation(
                 "RabbitMQ topology declared. Exchange: {Exchange} (durable), Queue: {Queue} (durable), " +
-                "RoutingKey: {RoutingKey}, RetryQueues: {RetryQueues}",
+                "RoutingKey: {RoutingKey}, RetryQueues: {RetryQueues}, Dlq: {Dlq}",
                 RabbitMqTopology.OrdersExchange, RabbitMqTopology.OrdersProcessingQueue,
                 RabbitMqTopology.OrderCreatedRoutingKey,
-                string.Join(", ", RabbitMqTopology.RetryQueues.Select(q => $"{q.QueueName}({q.Ttl.TotalSeconds}s)")));
+                string.Join(", ", RabbitMqTopology.RetryQueues.Select(q => $"{q.QueueName}({q.Ttl.TotalSeconds}s)")),
+                RabbitMqTopology.OrdersDlqQueue);
         }
         catch (Exception ex)
         {

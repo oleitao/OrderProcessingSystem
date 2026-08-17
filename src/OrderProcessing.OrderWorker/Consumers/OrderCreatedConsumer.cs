@@ -120,13 +120,13 @@ public sealed class OrderCreatedConsumer(
             var order = await orderRepository.GetByIdAsync(@event.OrderId, stoppingToken);
             if (order is null)
             {
-                // Nothing to retry here — the Order will never appear. ACK so this doesn't loop
-                // forever; a real system would route this to the DLQ (Phase 13) instead.
-                logger.LogWarning(
-                    "Order not found for event. EventId: {EventId}, OrderId: {OrderId}. Discarding.",
-                    @event.EventId, @event.OrderId);
-
-                await channel.BasicAckAsync(eventArgs.DeliveryTag, multiple: false, stoppingToken);
+                // Nothing to retry here — waiting won't make the Order appear. Straight to the
+                // DLQ rather than the retry queues: retrying a message that can never succeed just
+                // delays the (still necessary) human investigation by up to a minute for nothing.
+                await PublishToDlqAsync(
+                    channel, eventArgs, @event,
+                    new InvalidOperationException($"Order not found: {@event.OrderId}"),
+                    stoppingToken);
                 return;
             }
 
@@ -194,16 +194,7 @@ public sealed class OrderCreatedConsumer(
 
         if (nextRetryCount > RabbitMqTopology.MaxRetries)
         {
-            // TODO (Phase 13): route to orders.dlq instead of dropping. For now this is the one
-            // deliberately unfinished edge of this phase — retries beyond MaxRetries have nowhere
-            // durable to go yet, so the message would otherwise sit forever bouncing through
-            // retry.3. Dropping it here is explicit and logged, never silent.
-            logger.LogError(failure,
-                "Order processing failed permanently after {RetryCount} retries. EventId: {EventId}, " +
-                "OrderId: {OrderId}. Dropping (DLQ arrives in Phase 13).",
-                RabbitMqTopology.MaxRetries, @event?.EventId, @event?.OrderId);
-
-            await channel.BasicNackAsync(eventArgs.DeliveryTag, multiple: false, requeue: false, stoppingToken);
+            await PublishToDlqAsync(channel, eventArgs, @event, failure, stoppingToken);
             return;
         }
 
@@ -238,6 +229,50 @@ public sealed class OrderCreatedConsumer(
 
         // We've taken ownership of retrying this message ourselves by publishing a copy onto the
         // retry queue — ACK the original delivery so RabbitMQ doesn't also try to redeliver it.
+        await channel.BasicAckAsync(eventArgs.DeliveryTag, multiple: false, stoppingToken);
+    }
+
+    /// <summary>
+    /// Moves a message that exhausted MaxRetries to orders.dlq instead of dropping it — a message
+    /// permanently failing is never allowed to disappear silently (section 20).
+    /// </summary>
+    private async Task PublishToDlqAsync(
+        IChannel channel,
+        BasicDeliverEventArgs eventArgs,
+        OrderCreatedEvent? @event,
+        Exception failure,
+        CancellationToken stoppingToken)
+    {
+        var finalRetryCount = GetRetryCount(eventArgs.BasicProperties);
+        var failedAtUtc = DateTime.UtcNow;
+
+        var properties = new BasicProperties
+        {
+            Persistent = true,
+            ContentType = eventArgs.BasicProperties.ContentType,
+            Headers = new Dictionary<string, object?>
+            {
+                [RabbitMqTopology.RetryCountHeader] = finalRetryCount,
+                [RabbitMqTopology.LastErrorHeader] = Truncate(failure.Message, 500),
+                [RabbitMqTopology.FailedAtUtcHeader] = failedAtUtc.ToString("O")
+            }
+        };
+
+        await channel.BasicPublishAsync(
+            exchange: string.Empty,
+            routingKey: RabbitMqTopology.OrdersDlqQueue,
+            mandatory: false,
+            basicProperties: properties,
+            body: eventArgs.Body,
+            cancellationToken: stoppingToken);
+
+        logger.LogError(failure,
+            "Order processing failed permanently after {RetryCount} retries. EventId: {EventId}, " +
+            "OrderId: {OrderId}, TimestampUtc: {FailedAtUtc}. Moved to {DlqQueue}.",
+            finalRetryCount, @event?.EventId, @event?.OrderId, failedAtUtc, RabbitMqTopology.OrdersDlqQueue);
+
+        // We've taken ownership by moving it to the DLQ ourselves — ACK the original so RabbitMQ
+        // doesn't also try to redeliver it.
         await channel.BasicAckAsync(eventArgs.DeliveryTag, multiple: false, stoppingToken);
     }
 
