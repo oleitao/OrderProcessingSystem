@@ -33,6 +33,9 @@ public sealed class OrderCreatedConsumer(
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
+    private IConnection? _connection;
+    private IChannel? _channel;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await ConnectAndConsumeAsync(stoppingToken);
@@ -50,6 +53,23 @@ public sealed class OrderCreatedConsumer(
         }
     }
 
+    /// <summary>
+    /// Without this, the RabbitMQ connection/channel opened in ConnectAndConsumeAsync outlives
+    /// the BackgroundService itself — cancelling stoppingToken only stops ExecuteAsync's own loop,
+    /// it doesn't touch objects that method handed off to instance fields. A stale-but-still-open
+    /// consumer would keep receiving and processing messages meant for whatever starts next.
+    /// </summary>
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        await base.StopAsync(cancellationToken);
+
+        if (_channel is not null)
+            await _channel.CloseAsync(cancellationToken);
+
+        if (_connection is not null)
+            await _connection.CloseAsync(cancellationToken);
+    }
+
     private async Task ConnectAndConsumeAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
@@ -58,6 +78,8 @@ public sealed class OrderCreatedConsumer(
             {
                 var connection = await connectionFactory.CreateConnectionAsync(stoppingToken);
                 var channel = await connection.CreateChannelAsync(cancellationToken: stoppingToken);
+                _connection = connection;
+                _channel = channel;
 
                 // Only let up to 10 unacknowledged messages be delivered to this consumer at a
                 // time — without this, RabbitMQ pushes the whole queue at once regardless of how
@@ -98,7 +120,7 @@ public sealed class OrderCreatedConsumer(
 
             logger.LogInformation(
                 "Processing event. EventId: {EventId}, OrderId: {OrderId}, RetryCount: {RetryCount}",
-                @event.EventId, @event.OrderId, GetRetryCount(eventArgs.BasicProperties));
+                @event.EventId, @event.OrderId, RabbitMqTopology.GetRetryCount(eventArgs.BasicProperties.Headers));
 
             using var scope = scopeFactory.CreateScope();
             var orderRepository = scope.ServiceProvider.GetRequiredService<IOrderRepository>();
@@ -190,7 +212,7 @@ public sealed class OrderCreatedConsumer(
         Exception failure,
         CancellationToken stoppingToken)
     {
-        var nextRetryCount = GetRetryCount(eventArgs.BasicProperties) + 1;
+        var nextRetryCount = RabbitMqTopology.GetRetryCount(eventArgs.BasicProperties.Headers) + 1;
 
         if (nextRetryCount > RabbitMqTopology.MaxRetries)
         {
@@ -247,7 +269,7 @@ public sealed class OrderCreatedConsumer(
         Exception failure,
         CancellationToken stoppingToken)
     {
-        var finalRetryCount = GetRetryCount(eventArgs.BasicProperties);
+        var finalRetryCount = RabbitMqTopology.GetRetryCount(eventArgs.BasicProperties.Headers);
         var failedAtUtc = DateTime.UtcNow;
 
         var properties = new BasicProperties
@@ -278,22 +300,6 @@ public sealed class OrderCreatedConsumer(
         // We've taken ownership by moving it to the DLQ ourselves — ACK the original so RabbitMQ
         // doesn't also try to redeliver it.
         await channel.BasicAckAsync(eventArgs.DeliveryTag, multiple: false, stoppingToken);
-    }
-
-    private static int GetRetryCount(IReadOnlyBasicProperties properties)
-    {
-        if (properties.Headers is not null &&
-            properties.Headers.TryGetValue(RabbitMqTopology.RetryCountHeader, out var value))
-        {
-            return value switch
-            {
-                int i => i,
-                long l => (int)l,
-                _ => 0
-            };
-        }
-
-        return 0;
     }
 
     private static string Truncate(string value, int maxLength) =>

@@ -27,10 +27,17 @@ public static class DependencyInjection
     /// <summary>DbContext + repositories. Needed by both the Api and the OrderWorker.</summary>
     public static IServiceCollection AddPersistence(this IServiceCollection services, IConfiguration configuration)
     {
-        var connectionString = configuration.GetConnectionString("OrderDb")
-            ?? throw new InvalidOperationException("Connection string 'OrderDb' is not configured.");
+        // Reads the connection string lazily, inside the options callback, instead of capturing it
+        // in a local variable up front: AddPersistence runs before builder.Build(), and anything
+        // that finalizes configuration later — e.g. WebApplicationFactory's test overrides, which
+        // only apply at Build() time — would otherwise be invisible to an eagerly-captured value.
+        services.AddDbContext<OrderDbContext>((serviceProvider, options) =>
+        {
+            var connectionString = serviceProvider.GetRequiredService<IConfiguration>().GetConnectionString("OrderDb")
+                ?? throw new InvalidOperationException("Connection string 'OrderDb' is not configured.");
 
-        services.AddDbContext<OrderDbContext>(options => options.UseNpgsql(connectionString));
+            options.UseNpgsql(connectionString);
+        });
 
         services.AddScoped<IOrderRepository, OrderRepository>();
         services.AddScoped<IIdempotencyRepository, IdempotencyRepository>();
