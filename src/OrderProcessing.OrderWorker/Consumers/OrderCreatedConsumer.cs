@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using OrderProcessing.Application.Exceptions;
 using OrderProcessing.Application.Interfaces;
 using OrderProcessing.Contracts.Events;
 using OrderProcessing.Infrastructure.Messaging;
@@ -12,7 +13,9 @@ namespace OrderProcessing.OrderWorker.Consumers;
 /// <summary>
 /// Consumes OrderCreatedEvent from orders.processing and drives the Order from Pending to
 /// Completed. Manual ACK only after the DB commit — never before (section 4, "ACK tardio").
-/// Consumer idempotency (ProcessedMessages) is not implemented yet; that's Phase 10.
+/// RabbitMQ guarantees at-least-once delivery, never exactly-once — the same EventId can arrive
+/// more than once (redelivery after a dropped connection, a requeue, etc). ProcessedMessages is
+/// what turns that at-least-once delivery into idempotent, effectively-once processing.
 /// </summary>
 public sealed class OrderCreatedConsumer(
     IServiceScopeFactory scopeFactory,
@@ -89,6 +92,20 @@ public sealed class OrderCreatedConsumer(
 
             using var scope = scopeFactory.CreateScope();
             var orderRepository = scope.ServiceProvider.GetRequiredService<IOrderRepository>();
+            var processedMessageRepository = scope.ServiceProvider.GetRequiredService<IProcessedMessageRepository>();
+
+            // Fast path: skip processing entirely for a message we've already handled. Not the
+            // actual guarantee (see the DuplicateMessageException catch below) — just avoids
+            // redoing real work in the common redelivery case.
+            if (await processedMessageRepository.HasBeenProcessedAsync(@event.EventId, stoppingToken))
+            {
+                logger.LogInformation(
+                    "Event already processed. EventId: {EventId}, OrderId: {OrderId}. Skipping.",
+                    @event.EventId, @event.OrderId);
+
+                await channel.BasicAckAsync(eventArgs.DeliveryTag, multiple: false, stoppingToken);
+                return;
+            }
 
             var order = await orderRepository.GetByIdAsync(@event.OrderId, stoppingToken);
             if (order is null)
@@ -110,7 +127,22 @@ public sealed class OrderCreatedConsumer(
             // Placeholder for real business processing. Phase 12 hooks FailureProbability in here
             // to demonstrate retries.
             order.MarkAsCompleted();
-            await orderRepository.SaveChangesAsync(stoppingToken);
+            await processedMessageRepository.MarkAsProcessedAsync(@event.EventId, stoppingToken);
+
+            try
+            {
+                await orderRepository.SaveChangesAsync(stoppingToken);
+            }
+            catch (DuplicateMessageException)
+            {
+                // Lost the race: another delivery of this exact message (e.g. a second consumer
+                // instance, or a redelivery overlapping with this one) already inserted the
+                // ProcessedMessage row first. That delivery is the one whose completion counts;
+                // it's still safe to ACK this one instead of retrying it forever.
+                logger.LogInformation(
+                    "Event lost the processed-message insert race. EventId: {EventId}. Skipping.", @event.EventId);
+            }
+
             logger.LogInformation("Order processing completed. OrderId: {OrderId}", order.Id);
 
             // ACK only after the DB commit above — if the process had crashed before this line,

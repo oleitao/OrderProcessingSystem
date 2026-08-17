@@ -12,6 +12,9 @@ public sealed class OrderRepository(OrderDbContext dbContext) : IOrderRepository
     // Name EF Core generated for the unique index (see AddIdempotencyRecords migration).
     private const string IdempotencyKeyConstraintName = "IX_idempotency_records_Key";
 
+    // Name EF Core generated for the primary key (see AddProcessedMessages migration).
+    private const string ProcessedMessagePrimaryKeyConstraintName = "PK_processed_messages";
+
     public async Task AddAsync(Order order, CancellationToken cancellationToken)
     {
         await dbContext.Orders.AddAsync(order, cancellationToken);
@@ -45,6 +48,13 @@ public sealed class OrderRepository(OrderDbContext dbContext) : IOrderRepository
             // one Order ever gets created per Idempotency-Key.
             throw new IdempotencyKeyConflictException(idempotencyKey, ex);
         }
+        catch (DbUpdateException ex) when (TryGetConflictingMessageId(ex, out var messageId))
+        {
+            // Same principle as above, for the consumer side: the prior HasBeenProcessedAsync
+            // check is only a fast path; this primary-key violation is what actually guarantees a
+            // message is never processed twice, even with concurrent/overlapping deliveries.
+            throw new DuplicateMessageException(messageId, ex);
+        }
     }
 
     private static bool TryGetConflictingIdempotencyKey(DbUpdateException exception, out string idempotencyKey)
@@ -69,6 +79,31 @@ public sealed class OrderRepository(OrderDbContext dbContext) : IOrderRepository
             return false;
 
         idempotencyKey = record.Key;
+        return true;
+    }
+
+    private static bool TryGetConflictingMessageId(DbUpdateException exception, out Guid messageId)
+    {
+        messageId = Guid.Empty;
+
+        if (exception.InnerException is not PostgresException
+            {
+                SqlState: PostgresErrorCodes.UniqueViolation,
+                ConstraintName: ProcessedMessagePrimaryKeyConstraintName
+            })
+        {
+            return false;
+        }
+
+        var record = exception.Entries
+            .Select(entry => entry.Entity)
+            .OfType<ProcessedMessage>()
+            .FirstOrDefault();
+
+        if (record is null)
+            return false;
+
+        messageId = record.MessageId;
         return true;
     }
 }
