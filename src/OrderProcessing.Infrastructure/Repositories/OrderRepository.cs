@@ -27,10 +27,16 @@ public sealed class OrderRepository(OrderDbContext dbContext) : IOrderRepository
             .FirstOrDefaultAsync(order => order.Id == id, cancellationToken);
     }
 
-    public async Task<IReadOnlyList<Order>> GetAllAsync(CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<Order>> GetAllAsync(Guid? ownerUserId, CancellationToken cancellationToken)
     {
-        return await dbContext.Orders
+        var query = dbContext.Orders
             .Include(order => order.Items)
+            .AsQueryable();
+
+        if (ownerUserId is { } userId)
+            query = query.Where(order => order.UserId == userId);
+
+        return await query
             .OrderByDescending(order => order.CreatedAtUtc)
             .ToListAsync(cancellationToken);
     }

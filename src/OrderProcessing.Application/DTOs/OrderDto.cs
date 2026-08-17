@@ -4,6 +4,7 @@ public sealed record OrderItemDto(Guid Id, string ProductName, int Quantity, dec
 
 public sealed record OrderDto(
     Guid Id,
+    Guid UserId,
     string CustomerName,
     string CustomerEmail,
     string Status,

@@ -8,6 +8,8 @@ namespace OrderProcessing.UnitTests.Application;
 
 public class OrderServiceTests
 {
+    private static readonly Guid ValidUserId = Guid.NewGuid();
+
     private static readonly CreateOrderItemCommand[] ValidItems = [new("Keyboard", 1, 49.90m)];
 
     private static OrderService CreateSut(
@@ -25,7 +27,7 @@ public class OrderServiceTests
     {
         var outboxWriter = new FakeOutboxWriter();
         var sut = CreateSut(outboxWriter: outboxWriter);
-        var command = new CreateOrderCommand("John Doe", "john@example.com", ValidItems);
+        var command = new CreateOrderCommand(ValidUserId, "John Doe", "john@example.com", ValidItems);
 
         var result = await sut.CreateOrderAsync(command, CancellationToken.None);
 
@@ -39,7 +41,7 @@ public class OrderServiceTests
     public async Task CreateOrderAsync_WithNewIdempotencyKey_CreatesOrder()
     {
         var sut = CreateSut();
-        var command = new CreateOrderCommand("John Doe", "john@example.com", ValidItems, "fresh-key");
+        var command = new CreateOrderCommand(ValidUserId, "John Doe", "john@example.com", ValidItems, "fresh-key");
 
         var result = await sut.CreateOrderAsync(command, CancellationToken.None);
 
@@ -53,12 +55,12 @@ public class OrderServiceTests
         var idempotencyRepository = new FakeIdempotencyRepository();
         var outboxWriter = new FakeOutboxWriter();
 
-        var existingOrder = Order.Create("Jane Doe", "jane@example.com", [new("Widget", 1, 10m)]);
+        var existingOrder = Order.Create(ValidUserId, "Jane Doe", "jane@example.com", [new("Widget", 1, 10m)]);
         orderRepository.Seed(existingOrder);
         await idempotencyRepository.AddAsync(IdempotencyRecord.Create("dup-key", existingOrder.Id), CancellationToken.None);
 
         var sut = CreateSut(orderRepository, idempotencyRepository, outboxWriter);
-        var command = new CreateOrderCommand("John Doe", "john@example.com", ValidItems, "dup-key");
+        var command = new CreateOrderCommand(ValidUserId, "John Doe", "john@example.com", ValidItems, "dup-key");
 
         var result = await sut.CreateOrderAsync(command, CancellationToken.None);
 
@@ -74,13 +76,13 @@ public class OrderServiceTests
         var orderRepository = new FakeOrderRepository();
         var idempotencyRepository = new FakeIdempotencyRepository();
 
-        var winningOrder = Order.Create("Winner", "winner@example.com", [new("Widget", 1, 10m)]);
+        var winningOrder = Order.Create(ValidUserId, "Winner", "winner@example.com", [new("Widget", 1, 10m)]);
         orderRepository.Seed(winningOrder);
         idempotencyRepository.RevealOnSecondFind = IdempotencyRecord.Create("race-key", winningOrder.Id);
         orderRepository.ThrowIdempotencyConflictOnNextSave = true;
 
         var sut = CreateSut(orderRepository, idempotencyRepository);
-        var command = new CreateOrderCommand("Loser", "loser@example.com", ValidItems, "race-key");
+        var command = new CreateOrderCommand(ValidUserId, "Loser", "loser@example.com", ValidItems, "race-key");
 
         var result = await sut.CreateOrderAsync(command, CancellationToken.None);
 
@@ -99,24 +101,39 @@ public class OrderServiceTests
     }
 
     [Fact]
-    public async Task GetOrdersAsync_ReturnsAllSeededOrders()
+    public async Task GetOrdersAsync_WithNullOwnerFilter_ReturnsAllSeededOrders()
     {
         var orderRepository = new FakeOrderRepository();
-        orderRepository.Seed(Order.Create("A", "a@example.com", [new("Widget", 1, 1m)]));
-        orderRepository.Seed(Order.Create("B", "b@example.com", [new("Widget", 1, 1m)]));
+        orderRepository.Seed(Order.Create(ValidUserId, "A", "a@example.com", [new("Widget", 1, 1m)]));
+        orderRepository.Seed(Order.Create(Guid.NewGuid(), "B", "b@example.com", [new("Widget", 1, 1m)]));
 
         var sut = CreateSut(orderRepository);
 
-        var result = await sut.GetOrdersAsync(CancellationToken.None);
+        var result = await sut.GetOrdersAsync(null, CancellationToken.None);
 
         Assert.Equal(2, result.Count);
+    }
+
+    [Fact]
+    public async Task GetOrdersAsync_WithOwnerFilter_ReturnsOnlyThatUsersOrders()
+    {
+        var orderRepository = new FakeOrderRepository();
+        var ownedOrder = Order.Create(ValidUserId, "A", "a@example.com", [new("Widget", 1, 1m)]);
+        orderRepository.Seed(ownedOrder);
+        orderRepository.Seed(Order.Create(Guid.NewGuid(), "B", "b@example.com", [new("Widget", 1, 1m)]));
+
+        var sut = CreateSut(orderRepository);
+
+        var result = await sut.GetOrdersAsync(ValidUserId, CancellationToken.None);
+
+        Assert.Equal([ownedOrder.Id], result.Select(order => order.Id));
     }
 
     [Fact]
     public async Task CancelOrderAsync_WhenOrderExists_CancelsAndReturnsDto()
     {
         var orderRepository = new FakeOrderRepository();
-        var order = Order.Create("John Doe", "john@example.com", ValidItems.Select(i => new OrderItemDraft(i.ProductName, i.Quantity, i.UnitPrice)).ToList());
+        var order = Order.Create(ValidUserId, "John Doe", "john@example.com", ValidItems.Select(i => new OrderItemDraft(i.ProductName, i.Quantity, i.UnitPrice)).ToList());
         orderRepository.Seed(order);
 
         var sut = CreateSut(orderRepository);

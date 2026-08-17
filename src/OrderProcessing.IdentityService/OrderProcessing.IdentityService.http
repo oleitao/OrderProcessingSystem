@@ -1,0 +1,6 @@
+@OrderProcessing.IdentityService_HostAddress = http://localhost:5119
+
+GET {{OrderProcessing.IdentityService_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

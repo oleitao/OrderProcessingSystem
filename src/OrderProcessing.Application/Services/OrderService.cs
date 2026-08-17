@@ -33,7 +33,7 @@ public sealed class OrderService(
             .Select(item => new OrderItemDraft(item.ProductName, item.Quantity, item.UnitPrice))
             .ToList();
 
-        var order = Order.Create(command.CustomerName, command.CustomerEmail, itemDrafts);
+        var order = Order.Create(command.UserId, command.CustomerName, command.CustomerEmail, itemDrafts);
 
         await orderRepository.AddAsync(order, cancellationToken);
         await outboxWriter.AddOrderCreatedEventAsync(order.Id, cancellationToken);
@@ -82,9 +82,9 @@ public sealed class OrderService(
         return order is null ? null : ToDto(order);
     }
 
-    public async Task<IReadOnlyList<OrderDto>> GetOrdersAsync(CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<OrderDto>> GetOrdersAsync(Guid? ownerUserId, CancellationToken cancellationToken)
     {
-        var orders = await orderRepository.GetAllAsync(cancellationToken);
+        var orders = await orderRepository.GetAllAsync(ownerUserId, cancellationToken);
         return orders.Select(ToDto).ToList();
     }
 
@@ -104,6 +104,7 @@ public sealed class OrderService(
 
     private static OrderDto ToDto(Order order) => new(
         order.Id,
+        order.UserId,
         order.CustomerName,
         order.CustomerEmail,
         order.Status.ToString(),
